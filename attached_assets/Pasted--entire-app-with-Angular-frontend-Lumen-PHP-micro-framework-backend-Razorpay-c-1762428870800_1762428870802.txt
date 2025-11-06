@@ -1,0 +1,884 @@
+ **entire app** with **Angular (frontend)** + **Lumen (PHP micro-framework) backend** + **Razorpay checkout** + **webhook provisioning** + **WhatsApp + Email notifications**. It creates two Repls (one for backend, one for frontend) and wires them together.
+
+---
+
+# 🔧 REPLIT AGENT PROMPT — Build the Full App (Angular + Lumen)
+
+> Create **two** Repls:
+>
+> 1. `elearn-backend-lumen` (PHP/Lumen 10, MySQL/SQLite)
+> 2. `elearn-frontend-angular` (Angular 17 + Bootstrap 5)
+
+Follow the steps below **exactly**.
+
+---
+
+## A) Backend Repl — Lumen 10 (PHP 8.3) with Razorpay & Webhook
+
+### 1) Repl setup
+
+* Create a new **Nix** (or **PHP**) Repl named **`elearn-backend-lumen`**.
+* Add these files at the root:
+
+**`replit.nix`**
+
+```nix
+{ pkgs }: {
+  deps = [
+    pkgs.php83
+    pkgs.php83Packages.composer
+    pkgs.nodejs_20
+    pkgs.redis
+    pkgs.php83Extensions.curl
+    pkgs.php83Extensions.mbstring
+    pkgs.php83Extensions.pdo
+    pkgs.php83Extensions.pdo_mysql
+    pkgs.php83Extensions.sqlite3
+    pkgs.php83Extensions.openssl
+    pkgs.php83Extensions.tokenizer
+    pkgs.php83Extensions.xml
+    pkgs.php83Extensions.zip
+  ];
+}
+```
+
+**`.replit`**
+
+```ini
+run = "bash .replit_run.sh"
+onBoot = "bash .replit_bootstrap.sh"
+language = "php"
+```
+
+**`.replit_bootstrap.sh`**
+
+```bash
+#!/usr/bin/env bash
+set -e
+
+if [ ! -d "lumen" ]; then
+  composer create-project --prefer-dist laravel/lumen lumen
+fi
+
+cd lumen
+
+composer require razorpay/razorpay:^2.9
+composer require firebase/php-jwt:^6.9
+composer require guzzlehttp/guzzle:^7.8
+composer require vlucas/phpdotenv:^5.6
+composer require illuminate/validation illuminate/database illuminate/mail:^10.0
+composer require dompdf/dompdf:^2.0 simplesoftwareio/simple-qrcode:^4.4
+
+# env
+if [ ! -f .env ]; then
+  cp .env.example .env || true
+  echo "
+APP_NAME=Elearn
+APP_ENV=local
+APP_DEBUG=true
+APP_URL=https://$REPL_SLUG.$REPL_OWNER.repl.co
+
+# DB: default SQLite for dev on Replit
+DB_CONNECTION=sqlite
+DB_DATABASE=
+DB_PREFIX=
+
+# Razorpay
+RAZORPAY_KEY_ID=your_key_id
+RAZORPAY_KEY_SECRET=your_key_secret
+RAZORPAY_WEBHOOK_SECRET=replace_me
+
+# WhatsApp (Cloud API)
+WHATSAPP_TOKEN=your_meta_token
+WHATSAPP_PHONE_ID=your_phone_id
+WHATSAPP_TEMPLATE_WELCOME=welcome_template
+
+# Mail
+MAIL_MAILER=log
+MAIL_FROM_ADDRESS=no-reply@example.com
+MAIL_FROM_NAME=Elearn
+" >> .env
+fi
+
+mkdir -p database
+touch database/database.sqlite
+
+# Configure bootstrap/app.php (enable facades, Eloquent, validation)
+php -r '
+$f="lumen/bootstrap/app.php";
+$c=file_get_contents($f);
+$c=str_replace("\$app = new Laravel\\Lumen\\Application(", "\$app = new Laravel\\Lumen\\Application(", $c);
+if(strpos($c,"withFacades")===false){ $c=preg_replace("/\\$app = new Laravel\\\\Lumen\\\\Application\\((.*)\\);/","\\$app = new Laravel\\\\Lumen\\\\Application(\\$appPath);\n\\$app->withFacades();\n\\$app->withEloquent();",$c); }
+file_put_contents($f,$c);
+'
+
+# Create app scaffolding (models/controllers/middleware)
+php ../artisan_make.php || true
+```
+
+**`.replit_run.sh`**
+
+```bash
+#!/usr/bin/env bash
+set -e
+cd lumen
+php -S 0.0.0.0:3000 -t public
+```
+
+**`artisan_make.php`**
+
+```php
+<?php
+// one-time generator to create skeleton files
+$base = __DIR__ . '/lumen';
+@mkdir("$base/app/Http/Controllers/Api/V1", 0777, true);
+@mkdir("$base/app/Services", 0777, true);
+@mkdir("$base/app/Middleware", 0777, true);
+@mkdir("$base/app/Mail", 0777, true);
+@mkdir("$base/database/migrations", 0777, true);
+@mkdir("$base/routes", 0777, true);
+
+// routes
+$r = <<<'PHP'
+<?php
+
+$router->group(['prefix' => 'api/v1'], function () use ($router) {
+    // Catalog
+    $router->get('courses', 'Api\V1\CatalogController@index');
+    $router->get('courses/{id}', 'Api\V1\CatalogController@show');
+
+    // Preorder + Razorpay
+    $router->post('preorders', 'Api\V1\PreorderController@store');
+    $router->get('orders/{orderId}/status', 'Api\V1\OrdersController@status');
+    $router->post('payments/webhook/razorpay', 'Api\V1\WebhookController@razorpay'); // public
+
+    // Certificates
+    $router->get('certificates/{certNumber}', 'Api\V1\CertificatesController@verify');
+
+    // Authenticated (JWT)
+    $router->group(['middleware' => 'jwt'], function () use ($router) {
+        $router->get('me/dashboard', 'Api\V1\MeController@dashboard');
+        $router->get('lessons/{id}/content', 'Api\V1\LessonsController@content');
+        $router->post('progress', 'Api\V1\LessonsController@progress');
+    });
+});
+PHP;
+file_put_contents("$base/routes/web.php", $r);
+
+// public/index.php for Lumen
+$pub = <<<'PHP'
+<?php
+
+require __DIR__.'/../vendor/autoload.php';
+
+$app = require __DIR__.'/../bootstrap/app.php';
+
+$app->routeMiddleware([
+  'jwt' => App\Middleware\JwtMiddleware::class
+]);
+
+$app->run();
+PHP;
+if (!is_dir("$base/public")) mkdir("$base/public",0777,true);
+file_put_contents("$base/public/index.php",$pub);
+
+// bootstrap/app.php tweaks for routing file
+$boot = file_get_contents("$base/bootstrap/app.php");
+if (strpos($boot,"$app->router->group")===false) {
+  $boot .= "\n\n\$app->router->group(['namespace' => 'App\Http\Controllers'], function (\$router) {\n    require __DIR__.'/../routes/web.php';\n});\n";
+  file_put_contents("$base/bootstrap/app.php", $boot);
+}
+
+// JwtMiddleware
+$jwt = <<<'PHP'
+<?php
+namespace App\Middleware;
+
+use Closure;
+use Firebase\JWT\JWT;
+use Firebase\JWT\Key;
+use Illuminate\Http\Request;
+
+class JwtMiddleware {
+  public function handle($request, Closure $next) {
+    $auth = $request->header('Authorization');
+    if (!$auth || !preg_match('/Bearer\s+(.+)/',$auth,$m)) {
+      return response('Unauthorized',401);
+    }
+    try {
+      $token = $m[1];
+      // For demo, use RAZORPAY_WEBHOOK_SECRET as JWT secret; replace with your own
+      $payload = JWT::decode($token, new Key(env('RAZORPAY_WEBHOOK_SECRET','devsecret'), 'HS256'));
+      $request->attributes->set('jwt_user_id', $payload->sub ?? null);
+    } catch (\Throwable $e) {
+      return response('Unauthorized',401);
+    }
+    return $next($request);
+  }
+}
+PHP;
+file_put_contents("$base/app/Middleware/JwtMiddleware.php",$jwt);
+
+// Controllers (Catalog, Preorder, Orders, Webhook, Certificates, Me, Lessons)
+$catalog = <<<'PHP'
+<?php
+namespace App\Http\Controllers\Api\V1;
+
+use Laravel\Lumen\Routing\Controller as BaseController;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+
+class CatalogController extends BaseController {
+  public function index(Request $r) {
+    $q = DB::table('courses')->select('id','title','summary','price','currency')->whereNull('deleted_at');
+    if ($r->q) $q->where('title','like','%'.$r->q.'%');
+    return response()->json(['data'=>$q->orderBy('id','desc')->limit(50)->get()]);
+  }
+  public function show($id) {
+    $c = DB::table('courses')->where('id',$id)->first();
+    if (!$c) return response()->json(['error'=>'Not found'],404);
+    return response()->json($c);
+  }
+}
+PHP;
+file_put_contents("$base/app/Http/Controllers/Api/V1/CatalogController.php",$catalog);
+
+$preorder = <<<'PHP'
+<?php
+namespace App\Http\Controllers\Api\V1;
+
+use Laravel\Lumen\Routing\Controller as BaseController;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Razorpay\Api\Api;
+
+class PreorderController extends BaseController {
+  public function store(Request $r) {
+    $this->validate($r, [
+      'product_type' => 'required|in:course,ebook',
+      'product_id'   => 'required|integer',
+      'name'         => 'required|string|max:120',
+      'email'        => 'required|email',
+      'mobile'       => 'required|string|max:20',
+      'whatsapp'     => 'nullable|string|max:20',
+      'amount'       => 'required|integer|min:100',
+      'currency'     => 'sometimes|string|max:8'
+    ]);
+
+    $poId = DB::table('preorders')->insertGetId([
+      'product_type'=>$r->product_type,
+      'product_id'=>$r->product_id,
+      'name'=>$r->name,'email'=>$r->email,
+      'mobile'=>$r->mobile,'whatsapp'=>$r->whatsapp ?: $r->mobile,
+      'amount'=>$r->amount,'currency'=>$r->currency ?: 'INR',
+      'status'=>'created','ip'=>$r->ip(),'ua'=>$r->userAgent(),
+      'created_at'=>now(),'updated_at'=>now()
+    ]);
+
+    $api = new Api(env('RAZORPAY_KEY_ID'), env('RAZORPAY_KEY_SECRET'));
+    $order = $api->order->create([
+      'amount'=>$r->amount,'currency'=>$r->currency ?: 'INR',
+      'receipt'=>$poId,'notes'=>[
+        'product_type'=>$r->product_type,
+        'product_id'=>$r->product_id,
+        'email'=>$r->email
+      ]
+    ]);
+
+    DB::table('preorders')->where('id',$poId)->update(['razorpay_order_id'=>$order['id']]);
+
+    return response()->json([
+      'preorder_id'=>$poId,
+      'razorpay_order_id'=>$order['id'],
+      'amount'=>$order['amount'],
+      'currency'=>$order['currency'],
+      'key_id'=>env('RAZORPAY_KEY_ID')
+    ]);
+  }
+}
+PHP;
+file_put_contents("$base/app/Http/Controllers/Api/V1/PreorderController.php",$preorder);
+
+$orders = <<<'PHP'
+<?php
+namespace App\Http\Controllers\Api\V1;
+
+use Laravel\Lumen\Routing\Controller as BaseController;
+use Illuminate\Support\Facades\DB;
+
+class OrdersController extends BaseController {
+  public function status($orderId) {
+    $po = DB::table('preorders')->where('razorpay_order_id',$orderId)->first();
+    if (!$po) return response()->json(['error'=>'Not found'],404);
+    return response()->json(['state'=>$po->status]);
+  }
+}
+PHP;
+file_put_contents("$base/app/Http/Controllers/Api/V1/OrdersController.php",$orders);
+
+$webhook = <<<'PHP'
+<?php
+namespace App\Http\Controllers\Api\V1;
+
+use Laravel\Lumen\Routing\Controller as BaseController;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Mail;
+
+class WebhookController extends BaseController {
+  public function razorpay(Request $r) {
+    $payload = $r->getContent();
+    $sig = $r->header('X-Razorpay-Signature');
+    $secret = env('RAZORPAY_WEBHOOK_SECRET','devsecret');
+    $expected = hash_hmac('sha256', $payload, $secret);
+    if (!hash_equals($expected, $sig)) return response()->json(['ok'=>false],400);
+
+    $event = json_decode($payload,true);
+    $orderId = data_get($event,'payload.payment.entity.order_id');
+    $paymentId = data_get($event,'payload.payment.entity.id');
+    $status = data_get($event,'payload.payment.entity.status');
+
+    if (!$orderId || $status !== 'captured') return response()->json(['ok'=>true]);
+
+    return DB::transaction(function() use ($orderId,$paymentId,$event) {
+      $po = DB::table('preorders')->where('razorpay_order_id',$orderId)->lockForUpdate()->first();
+      if (!$po) return response()->json(['ok'=>true]);
+      if ($po->status === 'paid') return response()->json(['ok'=>true]);
+
+      // Upsert user
+      $user = DB::table('users')->where('email',$po->email)->first();
+      $pw = null;
+      if (!$user) {
+        $pw = bin2hex(random_bytes(6));
+        $uid = DB::table('users')->insertGetId([
+          'name'=>$po->name,'email'=>$po->email,
+          'phone'=>$po->mobile,'whatsapp'=>$po->whatsapp,
+          'password_hash'=>password_hash($pw, PASSWORD_BCRYPT),
+          'role'=>'student','created_at'=>now(),'updated_at'=>now()
+        ]);
+        $user = DB::table('users')->where('id',$uid)->first();
+      }
+
+      // Grant access
+      if ($po->product_type === 'course') {
+        DB::table('enrollments')->updateOrInsert(
+          ['user_id'=>$user->id, 'course_id'=>$po->product_id],
+          ['status'=>'active','started_at'=>now(),'updated_at'=>now()]
+        );
+      } else {
+        DB::table('entitlements')->updateOrInsert(
+          ['user_id'=>$user->id,'ebook_id'=>$po->product_id],
+          ['status'=>'active','granted_at'=>now(),'updated_at'=>now()]
+        );
+      }
+
+      // Record payment
+      DB::table('payments')->updateOrInsert(
+        ['provider'=>'razorpay','provider_order_id'=>$orderId],
+        [
+          'preorder_id'=>$po->id,
+          'provider_payment_id'=>$paymentId,
+          'status'=>'captured','amount'=>$po->amount,'currency'=>$po->currency,
+          'webhook_payload'=>json_encode($event),
+          'updated_at'=>now(),'created_at'=>now()
+        ]
+      );
+
+      // Mark preorder paid
+      DB::table('preorders')->where('id',$po->id)->update(['status'=>'paid','updated_at'=>now()]);
+
+      // Send notifications (basic email log)
+      try {
+        Mail::raw("Welcome to Elearn!\nEmail: {$user->email}" . ($pw ? "\nPassword: $pw" : "\nUse your existing password"), function ($m) use ($user) {
+          $m->to($user->email)->subject('Your access is ready');
+        });
+      } catch (\Throwable $e) {}
+
+      // TODO: WhatsApp template send here (use Guzzle with WHATSAPP_TOKEN)
+      return response()->json(['ok'=>true]);
+    });
+  }
+}
+PHP;
+file_put_contents("$base/app/Http/Controllers/Api/V1/WebhookController.php",$webhook);
+
+$certs = <<<'PHP'
+<?php
+namespace App\Http\Controllers\Api\V1;
+
+use Laravel\Lumen\Routing\Controller as BaseController;
+use Illuminate\Support\Facades\DB;
+
+class CertificatesController extends BaseController {
+  public function verify($certNumber) {
+    $c = DB::table('certificates')->where('cert_number',$certNumber)->first();
+    if(!$c) return response()->json(['valid'=>false],404);
+    return response()->json(['valid'=>!$c->revoked_at,'data'=>$c]);
+  }
+}
+PHP;
+file_put_contents("$base/app/Http/Controllers/Api/V1/CertificatesController.php",$certs);
+
+$me = <<<'PHP'
+<?php
+namespace App\Http\Controllers\Api\V1;
+
+use Laravel\Lumen\Routing\Controller as BaseController;
+
+class MeController extends BaseController {
+  public function dashboard() {
+    return response()->json(['ok'=>true,'message'=>'stub dashboard']);
+  }
+}
+PHP;
+file_put_contents("$base/app/Http/Controllers/Api/V1/MeController.php",$me);
+
+$lessons = <<<'PHP'
+<?php
+namespace App\Http\Controllers\Api\V1;
+
+use Laravel\Lumen\Routing\Controller as BaseController;
+
+class LessonsController extends BaseController {
+  public function content($id) { return response()->json(['url'=>'SIGNED_URL_PLACEHOLDER']);}
+  public function progress() { return response()->json(['ok'=>true]);}
+}
+PHP;
+file_put_contents("$base/app/Http/Controllers/Api/V1/LessonsController.php",$lessons);
+
+// Migrations (SQLite-friendly)
+$now = date('Y_m_d_His');
+$mig = <<<'PHP'
+<?php
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration {
+  public function up(): void {
+    Schema::create('users', function (Blueprint $t) {
+      $t->id(); $t->string('name'); $t->string('email')->unique(); 
+      $t->string('phone')->nullable(); $t->string('whatsapp')->nullable();
+      $t->string('password_hash'); $t->string('role')->default('student');
+      $t->timestamps(); $t->softDeletes();
+    });
+    Schema::create('courses', function (Blueprint $t) {
+      $t->id(); $t->string('title'); $t->text('summary')->nullable();
+      $t->integer('price')->default(0); $t->string('currency',8)->default('INR');
+      $t->string('cover_url')->nullable(); $t->string('status')->default('published');
+      $t->timestamps(); $t->softDeletes();
+    });
+    Schema::create('preorders', function (Blueprint $t) {
+      $t->id(); $t->enum('product_type',['course','ebook']);
+      $t->unsignedBigInteger('product_id'); $t->string('name'); $t->string('email')->index();
+      $t->string('mobile')->nullable(); $t->string('whatsapp')->nullable();
+      $t->string('razorpay_order_id')->unique()->nullable();
+      $t->integer('amount')->default(0); $t->string('currency',8)->default('INR');
+      $t->string('status')->default('created');
+      $t->json('consents_json')->nullable(); $t->json('utm_json')->nullable();
+      $t->string('ip')->nullable(); $t->string('ua')->nullable();
+      $t->timestamps();
+    });
+    Schema::create('payments', function (Blueprint $t) {
+      $t->id(); $t->unsignedBigInteger('preorder_id')->nullable();
+      $t->string('provider')->default('razorpay');
+      $t->string('provider_order_id')->unique(); $t->string('provider_payment_id')->nullable();
+      $t->integer('amount')->default(0); $t->string('currency',8)->default('INR');
+      $t->string('status')->default('captured'); $t->json('webhook_payload')->nullable();
+      $t->timestamps();
+    });
+    Schema::create('enrollments', function (Blueprint $t) {
+      $t->id(); $t->unsignedBigInteger('user_id'); $t->unsignedBigInteger('course_id');
+      $t->string('status')->default('active'); $t->timestamp('started_at')->nullable();
+      $t->timestamp('completed_at')->nullable(); $t->timestamps();
+      $t->unique(['user_id','course_id']);
+    });
+    Schema::create('entitlements', function (Blueprint $t) {
+      $t->id(); $t->unsignedBigInteger('user_id'); $t->unsignedBigInteger('ebook_id');
+      $t->string('status')->default('active'); $t->timestamp('granted_at')->nullable();
+      $t->timestamp('revoked_at')->nullable(); $t->timestamps();
+      $t->unique(['user_id','ebook_id']);
+    });
+    Schema::create('certificates', function (Blueprint $t) {
+      $t->id(); $t->unsignedBigInteger('user_id'); $t->unsignedBigInteger('course_id');
+      $t->string('cert_number')->unique(); $t->string('pdf_url')->nullable();
+      $t->timestamp('issued_at')->nullable(); $t->timestamp('revoked_at')->nullable();
+      $t->string('revoke_reason')->nullable(); $t->timestamps();
+    });
+  }
+  public function down(): void {
+    Schema::dropIfExists('certificates'); Schema::dropIfExists('entitlements');
+    Schema::dropIfExists('enrollments'); Schema::dropIfExists('payments');
+    Schema::dropIfExists('preorders'); Schema::dropIfExists('courses'); Schema::dropIfExists('users');
+  }
+};
+PHP;
+file_put_contents("$base/database/migrations/{$now}_init_core.php",$mig);
+
+echo "OK\n";
+```
+
+### 2) Run migrations & seed demo data
+
+* Open the Repl shell:
+
+```bash
+cd lumen
+php artisan migrate
+php -r "use Illuminate\Support\Facades\DB; require 'vendor/autoload.php'; \$app=require 'bootstrap/app.php'; DB::table('courses')->insert([
+ ['title'=>'Angular Mastery','summary'=>'Full Angular course','price'=>49900,'currency'=>'INR','created_at'=>now(),'updated_at'=>now()],
+ ['title'=>'PHP Lumen API','summary'=>'Build microservices','price'=>39900,'currency'=>'INR','created_at'=>now(),'updated_at'=>now()]
+]); echo 'Seeded';"
+```
+
+### 3) Set **Secrets** (Replit → Tools → Secrets)
+
+```
+RAZORPAY_KEY_ID=...
+RAZORPAY_KEY_SECRET=...
+RAZORPAY_WEBHOOK_SECRET=...
+WHATSAPP_TOKEN=...
+WHATSAPP_PHONE_ID=...
+WHATSAPP_TEMPLATE_WELCOME=welcome_template
+MAIL_MAILER=log
+```
+
+### 4) Start backend
+
+* Click **Run**. Your API base will be:
+  `https://<backend-repl-domain>/api/v1`
+
+---
+
+## B) Frontend Repl — Angular 17 + Bootstrap + Razorpay
+
+### 1) Create the Angular Repl
+
+* Create a new **Node.js** Repl named **`elearn-frontend-angular`**.
+* In shell:
+
+```bash
+npx -y @angular/cli@17 new frontend --style=scss --routing=true
+mv frontend/* ./ && rm -rf frontend
+npm i bootstrap@5 axios
+```
+
+### 2) Configure Bootstrap & global styles
+
+* In `angular.json`, under `"styles"`, add:
+
+```json
+"styles": [
+  "node_modules/bootstrap/dist/css/bootstrap.min.css",
+  "src/styles.scss"
+]
+```
+
+* `src/styles.scss`
+
+```scss
+:root{
+  --bg: #000000; --bg2:#0A0A0A; --card:#18181B; --elev:#1C1C1E;
+  --primary:#6366F1; --secondary:#8B5CF6; --tertiary:#7C3AED;
+  --text:#FFFFFF; --text2:#A1A1AA; --muted:#6B7280; --border:#27272A;
+}
+body { background: var(--bg); color: var(--text2); }
+a { color: var(--primary); } a:hover { color: var(--secondary); }
+.navbar { background: rgba(0,0,0,0.8)!important; }
+.card { background: var(--card); border:1px solid var(--border); box-shadow:0 8px 24px rgba(99,102,241,.1); }
+.btn-primary { background: var(--primary); border: none; }
+```
+
+### 3) Environment variables
+
+* `src/environments/environment.ts`
+
+```ts
+export const environment = {
+  production: false,
+  apiBase: 'https://YOUR-BACKEND-REPL-DOMAIN/api/v1',
+  razorpayKeyId: 'rzp_test_xxxxxxxxx'
+};
+```
+
+### 4) Load Razorpay script
+
+* `src/index.html` inside `<head>`:
+
+```html
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+```
+
+### 5) Angular services & routing
+
+* `src/app/services/api.service.ts`
+
+```ts
+import { Injectable } from '@angular/core';
+import axios from 'axios';
+import { environment } from '../../environments/environment';
+
+@Injectable({ providedIn: 'root' })
+export class ApiService {
+  base = environment.apiBase;
+  async getCourses(){ return (await axios.get(`${this.base}/courses`)).data.data; }
+  async getCourse(id:number){ return (await axios.get(`${this.base}/courses/${id}`)).data; }
+  async preorder(payload:any){ return (await axios.post(`${this.base}/preorders`, payload)).data; }
+  async orderStatus(orderId:string){ return (await axios.get(`${this.base}/orders/${orderId}/status`)).data; }
+}
+```
+
+* `src/app/app.routes.ts`
+
+```ts
+import { Routes } from '@angular/router';
+import { HomeComponent } from './pages/home.component';
+import { CourseDetailComponent } from './pages/course-detail.component';
+import { PurchaseStatusComponent } from './pages/purchase-status.component';
+
+export const routes: Routes = [
+  { path:'', component: HomeComponent },
+  { path:'courses/:id', component: CourseDetailComponent },
+  { path:'purchase-status', component: PurchaseStatusComponent },
+];
+```
+
+* `src/app/app.component.html`
+
+```html
+<nav class="navbar navbar-dark">
+  <div class="container">
+    <a class="navbar-brand text-white" routerLink="/">E-Learning</a>
+  </div>
+</nav>
+<router-outlet></router-outlet>
+<footer class="py-4 text-center text-secondary">© {{year}} E-Learning</footer>
+```
+
+* `src/app/app.component.ts`
+
+```ts
+import { Component } from '@angular/core';
+@Component({ selector:'app-root', templateUrl:'./app.component.html' })
+export class AppComponent { year = new Date().getFullYear(); }
+```
+
+### 6) Pages & Buy Now modal
+
+* `src/app/pages/home.component.ts`
+
+```ts
+import { Component, OnInit } from '@angular/core';
+import { ApiService } from '../services/api.service';
+@Component({
+  selector:'app-home', standalone:true, template:`
+  <div class="container my-4">
+    <div class="p-5 rounded-4 mb-4" style="background:#0A0A0A;color:#fff">
+      <h1 class="display-6 fw-bold">Upskill in a modern, dark UI</h1>
+      <p class="lead text-secondary">Choose a course and click Buy Now.</p>
+    </div>
+    <div class="row g-3">
+      <div class="col-md-4" *ngFor="let c of courses">
+        <div class="card h-100">
+          <div class="card-body d-flex flex-column">
+            <h5 class="card-title text-white">{{c.title}}</h5>
+            <p class="card-text text-secondary">{{c.summary}}</p>
+            <div class="mt-auto d-flex justify-content-between align-items-center">
+              <span class="fw-semibold text-white">₹{{(c.price/100) | number:'1.2-2'}}</span>
+              <a [routerLink]="['/courses', c.id]" class="btn btn-sm btn-primary">View</a>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p *ngIf="!courses?.length" class="text-secondary">No courses.</p>
+    </div>
+  </div>`, imports:[] })
+export class HomeComponent implements OnInit {
+  courses:any[]=[];
+  constructor(private api:ApiService){}
+  async ngOnInit(){ this.courses = await this.api.getCourses(); }
+}
+```
+
+* `src/app/pages/course-detail.component.ts`
+
+```ts
+import { Component, OnInit } from '@angular/core';
+import { ActivatedRoute, Router } from '@angular/router';
+import { ApiService } from '../services/api.service';
+
+declare const Razorpay:any;
+
+@Component({
+  selector:'app-course-detail', standalone:true, template:`
+  <div class="container my-4" *ngIf="course">
+    <div class="row">
+      <div class="col-lg-8">
+        <div class="p-4 rounded-4" style="background:#0A0A0A;color:#fff">
+          <h2 class="fw-bold">{{course.title}}</h2>
+          <p class="text-secondary">{{course.summary}}</p>
+          <button class="btn btn-lg btn-primary" (click)="openBuy()">Enroll to Course / Buy Now</button>
+        </div>
+      </div>
+      <div class="col-lg-4">
+        <div class="p-4 rounded-4" style="background:#18181B;color:#fff;border:1px solid #27272A">
+          <div class="d-flex align-items-baseline justify-content-between">
+            <span class="text-secondary">Price</span>
+            <h4 class="m-0">₹{{(course.price/100) | number:'1.2-2'}}</h4>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal -->
+    <div class="modal d-block" *ngIf="show" style="background:rgba(0,0,0,.6)">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content" style="background:#1C1C1E;color:#fff;border:1px solid #27272A">
+          <div class="modal-header">
+            <h5 class="modal-title">Enroll / Buy Now</h5>
+            <button type="button" class="btn-close btn-close-white" (click)="show=false"></button>
+          </div>
+          <form (ngSubmit)="submit()">
+            <div class="modal-body">
+              <div class="mb-3">
+                <label class="form-label">Full Name</label>
+                <input class="form-control" [(ngModel)]="form.name" name="name" required>
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Email</label>
+                <input type="email" class="form-control" [(ngModel)]="form.email" name="email" required>
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Mobile</label>
+                <input class="form-control" [(ngModel)]="form.mobile" name="mobile" required>
+              </div>
+              <div class="mb-1">
+                <label class="form-label">WhatsApp</label>
+                <input class="form-control" [(ngModel)]="form.whatsapp" name="whatsapp" placeholder="defaults to Mobile">
+              </div>
+              <small class="text-secondary">By continuing, you agree to our Terms & Privacy.</small>
+            </div>
+            <div class="modal-footer">
+              <button class="btn" type="button" style="background:#1E1E1E;color:#fff;border:1px solid #3F3F46" (click)="show=false">Cancel</button>
+              <button class="btn btn-primary" [disabled]="loading" type="submit">{{loading?'Please wait…':'Proceed to Pay'}}</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+  </div>`, imports:[]})
+export class CourseDetailComponent implements OnInit {
+  course:any; show=false; loading=false;
+  form:any={name:'',email:'',mobile:'',whatsapp:''};
+  constructor(private route:ActivatedRoute, private api:ApiService, private router:Router){}
+  async ngOnInit(){
+    const id = Number(this.route.snapshot.paramMap.get('id'));
+    this.course = await this.api.getCourse(id);
+  }
+  openBuy(){ this.show=true; }
+  async submit(){
+    this.loading = true;
+    try{
+      const res = await this.api.preorder({
+        product_type:'course', product_id:this.course.id,
+        name:this.form.name, email:this.form.email,
+        mobile:this.form.mobile, whatsapp:this.form.whatsapp || this.form.mobile,
+        amount:this.course.price
+      });
+      const options = {
+        key: (await import('../../environments/environment')).environment.razorpayKeyId,
+        amount: res.amount, currency: res.currency, name:'E-Learning',
+        description: this.course.title, order_id: res.razorpay_order_id,
+        prefill: { name:this.form.name, email:this.form.email, contact:this.form.mobile },
+        theme: { color:'#6366F1' },
+        handler: () => this.router.navigate(['/purchase-status'], { queryParams:{ order_id:res.razorpay_order_id } })
+      };
+      const rzp = new Razorpay(options); rzp.open();
+    } catch(e){ alert('Failed to create order.'); }
+    finally { this.loading=false; this.show=false; }
+  }
+}
+```
+
+* `src/app/pages/purchase-status.component.ts`
+
+```ts
+import { Component, OnInit } from '@angular/core';
+import { ActivatedRoute } from '@angular/router';
+import { ApiService } from '../services/api.service';
+
+@Component({
+  selector:'app-purchase-status', standalone:true,
+  template:`
+  <div class="container my-5" style="color:#fff">
+    <div class="p-5 rounded-4 text-center" style="background:#0A0A0A">
+      <h2 class="fw-bold mb-3">Payment Status</h2>
+      <ng-container [ngSwitch]="state">
+        <div *ngSwitchCase="'paid'">
+          <p class="text-success">Payment confirmed!</p>
+          <a routerLink="/" class="btn btn-primary">Start Learning</a>
+        </div>
+        <div *ngSwitchDefault>
+          <p class="text-secondary">We’re confirming your payment…</p>
+          <small class="text-secondary">If this takes more than a minute, contact support with Order ID: {{orderId}}</small>
+        </div>
+      </ng-container>
+    </div>
+  </div>`, imports:[] })
+export class PurchaseStatusComponent implements OnInit {
+  orderId = ''; state = 'checking';
+  constructor(private route:ActivatedRoute, private api:ApiService){}
+  async ngOnInit(){
+    this.orderId = this.route.snapshot.queryParamMap.get('order_id') || '';
+    let attempts=0;
+    const poll = async () => {
+      const res = await this.api.orderStatus(this.orderId);
+      this.state = res.state;
+      if (this.state!=='paid' && attempts<30){ attempts++; setTimeout(poll,2000); }
+    };
+    if (this.orderId) poll();
+  }
+}
+```
+
+### 7) CORS on backend
+
+In **backend** `lumen/bootstrap/app.php`, after app creation, add:
+
+```php
+header('Access-Control-Allow-Origin: https://YOUR-FRONTEND-REPL-DOMAIN');
+header('Access-Control-Allow-Headers: *');
+header('Access-Control-Allow-Methods: *');
+```
+
+(For production, implement proper CORS middleware.)
+
+### 8) Run frontend
+
+```bash
+npm run start
+# Open the Replit webview; ensure environment.apiBase points to backend
+```
+
+---
+
+## C) End-to-End Checklist (per SRS 2.0)
+
+* [x] **Catalog**: `GET /api/v1/courses` renders cards on Angular Home
+* [x] **Course detail** page loads from `GET /api/v1/courses/:id`
+* [x] **Buy Now modal** collects **Name, Email, Mobile, WhatsApp**
+* [x] **Preorder** POST creates Razorpay order & returns `order_id`
+* [x] **Razorpay Checkout** opens, completes payment
+* [x] **Webhook** sets `preorders.status=paid`, upserts user, grants **enrollment**/**entitlement**, records **payment**, sends **email** (log) + stub for **WhatsApp**
+* [x] **Status page** polls `/orders/{id}/status` until `paid`
+* [x] Styling matches **dark palette** and Bootstrap accents
+
+---
+
+## D) What to set before testing payments
+
+* Razorpay sandbox **KEY_ID**/**KEY_SECRET** + **WEBHOOK_SECRET** (set the webhook URL to:
+  `https://<backend-repl-domain>/api/v1/payments/webhook/razorpay`)
+* Replace `YOUR-BACKEND-REPL-DOMAIN` and `YOUR-FRONTEND-REPL-DOMAIN` in files above.
+
