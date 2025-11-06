@@ -1,0 +1,78 @@
+<div class="container py-5">
+  <div *ngIf="loading" class="text-center py-5">
+    <div class="spinner-border text-primary" role="status">
+      <span class="visually-hidden">Loading...</span>
+    </div>
+  </div>
+
+  <div *ngIf="error" class="alert alert-danger" role="alert">
+    {{ error }}
+  </div>
+
+  <div *ngIf="course && !loading" class="row">
+    <div class="col-lg-8">
+      <div class="card mb-4">
+        <img [src]="course.cover_url || 'https://via.placeholder.com/800x400/6366F1/FFFFFF?text=' + course.title" 
+             class="card-img-top course-cover" 
+             [alt]="course.title">
+        <div class="card-body">
+          <h1 class="card-title mb-3" style="color: var(--text);">{{ course.title }}</h1>
+          <p class="lead" style="color: var(--text2);">{{ course.summary }}</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-lg-4">
+      <div class="card sticky-top" style="top: 20px;">
+        <div class="card-body text-center">
+          <h3 class="course-price mb-3">₹{{ formatPrice(course.price) }}</h3>
+          <button class="btn btn-primary btn-lg w-100 mb-3" (click)="openPurchaseModal()">
+            Enroll Now
+          </button>
+          <p class="small" style="color: var(--muted);">
+            30-day money-back guarantee
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal" [class.show]="showModal" [style.display]="showModal ? 'block' : 'none'" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Complete Your Enrollment</h5>
+        <button type="button" class="btn-close btn-close-white" (click)="closeModal()" [disabled]="processing"></button>
+      </div>
+      <div class="modal-body">
+        <form [formGroup]="purchaseForm" (ngSubmit)="submitPurchase()">
+          <div class="mb-3">
+            <label for="name" class="form-label">Full Name *</label>
+            <input type="text" class="form-control" id="name" formControlName="name" required>
+          </div>
+          <div class="mb-3">
+            <label for="email" class="form-label">Email Address *</label>
+            <input type="email" class="form-control" id="email" formControlName="email" required>
+          </div>
+          <div class="mb-3">
+            <label for="mobile" class="form-label">Mobile Number *</label>
+            <input type="tel" class="form-control" id="mobile" formControlName="mobile" 
+                   placeholder="10 digit number" required>
+          </div>
+          <div class="mb-3">
+            <label for="whatsapp" class="form-label">WhatsApp Number (Optional)</label>
+            <input type="tel" class="form-control" id="whatsapp" formControlName="whatsapp"
+                   placeholder="Leave blank to use mobile number">
+          </div>
+          <button type="submit" class="btn btn-primary w-100" 
+                  [disabled]="purchaseForm.invalid || processing">
+            <span *ngIf="!processing">Proceed to Payment</span>
+            <span *ngIf="processing">Processing...</span>
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="modal-backdrop fade" [class.show]="showModal" *ngIf="showModal"></div>

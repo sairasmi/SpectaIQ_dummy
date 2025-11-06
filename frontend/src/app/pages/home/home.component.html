@@ -1,0 +1,44 @@
+<div class="container py-5">
+  <div class="text-center mb-5">
+    <h1 class="display-4 fw-bold mb-3" style="color: var(--text);">
+      Transform Your Career with <span style="color: var(--primary);">Expert Courses</span>
+    </h1>
+    <p class="lead" style="color: var(--text2);">
+      Learn from industry professionals and advance your skills
+    </p>
+  </div>
+
+  <div *ngIf="loading" class="text-center py-5">
+    <div class="spinner-border text-primary" role="status">
+      <span class="visually-hidden">Loading...</span>
+    </div>
+  </div>
+
+  <div *ngIf="error" class="alert alert-danger" role="alert">
+    {{ error }}
+  </div>
+
+  <div class="row g-4" *ngIf="!loading && !error">
+    <div class="col-md-6 col-lg-4" *ngFor="let course of courses">
+      <div class="card course-card h-100" (click)="viewCourse(course.id)">
+        <img [src]="course.cover_url || 'https://via.placeholder.com/400x300/6366F1/FFFFFF?text=Course'" 
+             class="card-img-top" 
+             [alt]="course.title">
+        <div class="card-body">
+          <h5 class="card-title" style="color: var(--text);">{{ course.title }}</h5>
+          <p class="card-text" style="color: var(--text2);">{{ course.summary }}</p>
+          <div class="d-flex justify-content-between align-items-center mt-3">
+            <span class="course-price">₹{{ formatPrice(course.price) }}</span>
+            <button class="btn btn-primary" (click)="viewCourse(course.id); $event.stopPropagation()">
+              View Details
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div *ngIf="!loading && !error && courses.length === 0" class="text-center py-5">
+    <p style="color: var(--text2);">No courses available at the moment.</p>
+  </div>
+</div>

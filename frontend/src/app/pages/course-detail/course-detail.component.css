@@ -1,0 +1,16 @@
+.course-cover {
+  height: 400px;
+  object-fit: cover;
+}
+
+.modal.show {
+  opacity: 1;
+}
+
+.modal-backdrop.show {
+  opacity: 0.5;
+}
+
+.btn-close-white {
+  filter: invert(1);
+}
